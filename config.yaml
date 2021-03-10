@@ -1,0 +1,204 @@
+programs:
+  # See:
+  # * http://www.brendangregg.com/blog/2017-05-09/cpu-utilization-is-wrong.html
+  # * https://github.com/iovisor/bcc/blob/master/tools/llcstat.py
+  # * https://github.com/iovisor/bcc/blob/master/tools/llcstat_example.txt
+  # * https://elixir.bootlin.com/linux/latest/source/include/uapi/linux/perf_event.h
+  # * https://man7.org/linux/man-pages/man2/perf_event_open.2.html
+  - name: hwstat
+    metrics:
+      counters:
+        - name: cpu_instructions_total
+          help: Instructions retired by CPUs
+          table: cpu_instructions
+          labels:
+            - name: pid
+              size: 4
+              decoders:
+                - name: uint
+            - name: comm
+              size: 16
+              decoders:
+                - name: string
+        - name: cpu_cycles_total
+          help: Cycles processed by CPUs
+          table: cpu_cycles
+          labels:
+            - name: pid
+              size: 4
+              decoders:
+                - name: uint
+            - name: comm
+              size: 16
+              decoders:
+                - name: string
+        - name: llc_references_total
+          help: Last level cache operations by type
+          table: llc_references
+          labels:
+            - name: pid
+              size: 4
+              decoders:
+                - name: uint
+            - name: comm
+              size: 16
+              decoders:
+                - name: string
+        - name: llc_misses_total
+          help: Last level cache operations by type
+          table: llc_misses
+          labels:
+            - name: pid
+              size: 4
+              decoders:
+                - name: uint
+            - name: comm
+              size: 16
+              decoders:
+                - name: string
+        - name: branch_instructions_total
+          help: Retired branch instructions
+          table: branch_instructions
+          labels:
+            - name: pid
+              size: 4
+              decoders:
+                - name: uint
+            - name: comm
+              size: 16
+              decoders:
+                - name: string
+        - name: branch_misses_total
+          help: Mispredicted branch instructions
+          table: branch_misses
+          labels:
+            - name: pid
+              size: 4
+              decoders:
+                - name: uint
+            - name: comm
+              size: 16
+              decoders:
+                - name: string
+    perf_events:
+      - type: 0x0 # HARDWARE
+        name: 0x1 # PERF_COUNT_HW_INSTRUCTIONS
+        target: on_cpu_instruction
+        sample_frequency: 99
+      - type: 0x0 # HARDWARE
+        name: 0x0 # PERF_COUNT_HW_CPU_CYCLES
+        target: on_cpu_cycle
+        sample_frequency: 99
+      - type: 0x0 # HARDWARE
+        name: 0x3 # PERF_COUNT_HW_CACHE_MISSES
+        target: on_cache_miss
+        sample_frequency: 99
+      - type: 0x0 # HARDWARE
+        name: 0x2 # PERF_COUNT_HW_CACHE_REFERENCES
+        target: on_cache_reference
+        sample_frequency: 99
+      - type: 0x0 # HARDWARE
+        name: 0x4 # PERF_COUNT_HW_BRANCH_INSTRUCTIONS
+        target: on_branch_instruction
+        sample_frequency: 99
+      - type: 0x0 # HARDWARE
+        name: 0x5 # PERF_COUNT_HW_BRANCH_MISSES
+        target: on_branch_miss
+        sample_frequency: 99
+    tracepoints:
+      sched:sched_process_exit: tracepoint__sched__sched_process_exit
+    code: |
+      #include <linux/ptrace.h>
+      #include <uapi/linux/bpf_perf_event.h>
+      #include <linux/sched.h>
+      #include <linux/types.h>
+      struct key_t {
+          uint pid;
+          char comm[TASK_COMM_LEN];
+      };
+      const int max_pids = 8192;
+
+
+      BPF_HASH(cpu_instructions, struct key_t, u64, max_pids);
+      BPF_HASH(cpu_cycles, struct key_t, u64, max_pids);
+      BPF_HASH(llc_references, struct key_t, u64, max_pids);
+      BPF_HASH(llc_misses, struct key_t, u64, max_pids);
+      BPF_HASH(branch_instructions, struct key_t, u64, max_pids);
+      BPF_HASH(branch_misses, struct key_t, u64, max_pids);
+
+      // Generates function tracepoint__sched__sched_process_exit
+      TRACEPOINT_PROBE(sched, sched_process_exit) {
+          // Get the process ID that resulted in this call.
+          struct task_struct *t  = (struct task_struct *)bpf_get_current_task();
+          // u32 pid = (u32) t->group_leader->pid;
+          struct key_t key = { .pid = t->group_leader->pid };
+          bpf_get_current_comm(key.comm, sizeof(key.comm));
+
+          cpu_instructions.delete(&key);
+          cpu_cycles.delete(&key);
+          llc_references.delete(&key);
+          llc_misses.delete(&key);
+          branch_instructions.delete(&key);
+          branch_misses.delete(&key);
+          return 0;
+      }
+
+
+      int on_cpu_instruction(struct bpf_perf_event_data *ctx) {
+          // Get the process ID that resulted in this call.
+          struct task_struct *t  = (struct task_struct *)bpf_get_current_task();
+          // u32 pid = (u32) t->group_leader->pid;
+          struct key_t key = { .pid = t->group_leader->pid };
+          bpf_get_current_comm(key.comm, sizeof(key.comm));
+
+          cpu_instructions.increment(key, ctx->sample_period);
+          return 0;
+      }
+
+      int on_cpu_cycle(struct bpf_perf_event_data *ctx) {
+          // Get the process ID that resulted in this call.
+          struct task_struct *t  = (struct task_struct *)bpf_get_current_task();
+          struct key_t key = { .pid = t->group_leader->pid };
+          bpf_get_current_comm(key.comm, sizeof(key.comm));
+
+          cpu_cycles.increment(key, ctx->sample_period);
+          return 0;
+      }
+
+      int on_cache_miss(struct bpf_perf_event_data *ctx) {
+          // Get the process ID that resulted in this call.
+          struct task_struct *t  = (struct task_struct *)bpf_get_current_task();
+          struct key_t key = { .pid = t->group_leader->pid };
+          bpf_get_current_comm(key.comm, sizeof(key.comm));
+          llc_misses.increment(key ,ctx->sample_period);
+          return 0;
+      }
+
+      int on_cache_reference(struct bpf_perf_event_data *ctx) {
+          // Get the process ID that resulted in this call.
+          struct task_struct *t  = (struct task_struct *)bpf_get_current_task();
+          struct key_t key = { .pid = t->group_leader->pid };
+          bpf_get_current_comm(key.comm, sizeof(key.comm));
+          llc_references.increment(key, ctx->sample_period);
+          return 0;
+      }
+
+      int on_branch_instruction(struct bpf_perf_event_data *ctx) {
+          // Get the process ID that resulted in this call.
+          struct task_struct *t  = (struct task_struct *)bpf_get_current_task();
+          struct key_t key = { .pid = t->group_leader->pid };
+          bpf_get_current_comm(key.comm, sizeof(key.comm));
+
+          branch_instructions.increment(key, ctx->sample_period);
+          return 0;
+      }
+
+      int on_branch_miss(struct bpf_perf_event_data *ctx) {
+          // Get the process ID that resulted in this call.
+          struct task_struct *t  = (struct task_struct *)bpf_get_current_task();
+          struct key_t key = { .pid = t->group_leader->pid };
+          bpf_get_current_comm(key.comm, sizeof(key.comm));
+
+          branch_misses.increment(key, ctx->sample_period);
+          return 0;
+      }
