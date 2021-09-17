@@ -1,0 +1,17 @@
+version: '3'
+
+services:
+  sriov-prometheus-exporter:
+    image: nfvri/sriov-network-metrics-exporter
+    container_name: sriov-metrics-exporter
+    ports:
+      - 9808:9808
+    volumes:
+      - /sys/class/net:/host/sys/class/net:ro
+      - /sys/bus/pci/devices:/host/sys/bus/pci/devices:ro
+      - /sys/devices:/host/sys/devices:ro
+      - /sys/devices/system/node/:/host/sys/devices/system/node/:ro
+      - /var/lib/kubelet/cpu_manager_state:/host/cpu_manager_state:ro
+      - /sys/fs/cgroup/cpuset/kubepods/:/host/kubecgroup:ro
+      - /var/lib/kubelet/pod-resources/kubelet.sock:/host/kubelet.sock
+    command: --path.kubecgroup=/host/kubecgroup --path.sysbuspci=/host/sys/bus/pci/devices/ --path.sysclassnet=/host/sys/class/net --path.cpucheckpoint=/host/cpu_manager_state --path.kubeletSocket=/host/kubelet.sock --collector.kubepoddevice=true --collector.netlink=false
